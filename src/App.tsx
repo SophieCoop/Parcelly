@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Drawer } from './components/Drawer';
 import { Toasts } from './components/Toasts';
 import { ActionRequiredPage } from './pages/ActionRequired';
@@ -54,14 +54,20 @@ function Shell() {
   );
 }
 
+/**
+ * Hosting without server-side rewrites (a single static file, a file:// page)
+ * can't serve /package/123, so those builds route through the URL hash.
+ */
+const Router = import.meta.env.VITE_HASH_ROUTER ? HashRouter : BrowserRouter;
+
 export default function App() {
   return (
-    <BrowserRouter>
+    <Router>
       <StoreProvider>
         <UIProvider>
           <Shell />
         </UIProvider>
       </StoreProvider>
-    </BrowserRouter>
+    </Router>
   );
 }
