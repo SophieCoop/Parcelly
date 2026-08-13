@@ -1,0 +1,14 @@
+{
+  "name": "Parcelly",
+  "short_name": "Parcelly",
+  "description": "כל החבילות שלך, במקום אחד.",
+  "lang": "he",
+  "dir": "rtl",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F6F5FA",
+  "theme_color": "#6C35DC",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
