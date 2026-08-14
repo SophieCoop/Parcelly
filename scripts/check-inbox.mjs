@@ -11,8 +11,10 @@
  * Nothing is stored and nothing is uploaded: it reads, parses in memory, prints
  * a table, and exits. Credentials come from .env (see .env.example).
  */
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
+import { stdin, stdout } from 'node:process';
 import { build } from 'esbuild';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
@@ -45,14 +47,82 @@ const SHIPPING_HINTS = [
 
 /* ------------------------------------------------------------------- env -- */
 
+const ENV_PATH = join(ROOT, '.env');
+
 function loadEnv() {
-  const path = join(ROOT, '.env');
-  if (!existsSync(path)) return;
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
+  if (!existsSync(ENV_PATH)) return;
+  for (const line of readFileSync(ENV_PATH, 'utf8').split('\n')) {
     const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
     if (!match) continue;
     const value = match[2].replace(/^["']|["']$/g, '');
     if (!(match[1] in process.env)) process.env[match[1]] = value;
+  }
+}
+
+/**
+ * Asks for the mailbox details when .env has none, so the first run needs no
+ * hand-edited config file. One readline interface serves every question —
+ * opening a fresh one per question discards input already buffered on stdin.
+ */
+async function promptForCredentials() {
+  if (!stdin.isTTY) {
+    console.error(
+      'No mailbox configured, and there is no terminal to ask on.\n' +
+        'Run `npm run inbox` directly in a terminal, or put IMAP_USER and ' +
+        'IMAP_PASSWORD in a .env file.',
+    );
+    process.exit(1);
+  }
+
+  const rl = createInterface({ input: stdin, output: stdout, terminal: true });
+  const ask = async (question, { secret = false } = {}) => {
+    if (!secret) return (await rl.question(question)).trim();
+    // Echo the prompt, then silence the terminal so the password isn't shown.
+    stdout.write(question);
+    rl._writeToOutput = () => {};
+    const answer = await rl.question('');
+    // Restore the prototype method; assigning null would break later prompts.
+    delete rl._writeToOutput;
+    stdout.write('\n');
+    return answer.trim();
+  };
+
+  console.log(
+    `\n${BOLD}Connect a mailbox${OFF}\n` +
+      `${DIM}Gmail: turn on 2-step verification, then create an app password at\n` +
+      `https://myaccount.google.com/apppasswords and paste it below.\n` +
+      `It grants mail access only and can be revoked at any time.${OFF}\n`,
+  );
+
+  try {
+    const user = await ask('Email address: ');
+    // Google shows app passwords in groups of four; the spaces are not part of it.
+    const password = (await ask('App password: ', { secret: true })).replace(/\s+/g, '');
+    if (!user || !password) {
+      console.error('\nBoth fields are required.');
+      process.exit(1);
+    }
+
+    const host =
+      user.includes('@gmail.') || user.includes('@googlemail.')
+        ? 'imap.gmail.com'
+        : (await ask('IMAP server (blank for imap.gmail.com): ')) || 'imap.gmail.com';
+
+    const remember = await ask('\nSave these to .env so you are not asked again? [y/N] ');
+    if (/^y(es)?$/i.test(remember)) {
+      writeFileSync(ENV_PATH, `IMAP_USER=${user}\nIMAP_PASSWORD=${password}\nIMAP_HOST=${host}\n`, {
+        mode: 0o600,
+      });
+      console.log(`${DIM}Saved to .env (gitignored, readable only by you).${OFF}`);
+    }
+
+    return { user, password, host };
+  } catch {
+    // Ctrl+C or Ctrl+D at a prompt: leave quietly, not with a stack trace.
+    console.log('\nCancelled.');
+    process.exit(1);
+  } finally {
+    rl.close();
   }
 }
 
@@ -170,24 +240,41 @@ if (OPTIONS.file) {
   const mail = await simpleParser(readFileSync(OPTIONS.file));
   rows.push({ mail, parsed: parseAsOf(mail) });
 } else {
-  const { IMAP_USER, IMAP_PASSWORD, IMAP_HOST = 'imap.gmail.com' } = process.env;
-  if (!IMAP_USER || !IMAP_PASSWORD) {
-    console.error(
-      'Missing IMAP_USER / IMAP_PASSWORD.\n' +
-        'Copy .env.example to .env and fill in a Gmail app password (see the README).',
-    );
-    process.exit(1);
-  }
+  const fromEnv = process.env.IMAP_USER && process.env.IMAP_PASSWORD;
+  const { user, password, host } = fromEnv
+    ? {
+        user: process.env.IMAP_USER,
+        password: process.env.IMAP_PASSWORD.replace(/\s+/g, ''),
+        host: process.env.IMAP_HOST || 'imap.gmail.com',
+      }
+    : await promptForCredentials();
 
   const client = new ImapFlow({
-    host: IMAP_HOST,
+    host,
     port: 465,
     secure: true,
-    auth: { user: IMAP_USER, pass: IMAP_PASSWORD },
+    auth: { user, pass: password },
     logger: false,
   });
 
-  await client.connect();
+  try {
+    await client.connect();
+  } catch (error) {
+    const message = String(error?.responseText || error?.message || error);
+    console.error(`\n${RED}Could not sign in to ${user}${OFF}`);
+    if (/invalid credentials|authentication failed/i.test(message)) {
+      console.error(
+        'The server rejected the password. Two things to check:\n' +
+          '  1. It must be an app password, not your normal account password.\n' +
+          '  2. IMAP has to be enabled in Gmail (Settings → Forwarding and POP/IMAP).',
+      );
+    } else {
+      console.error(message);
+    }
+    process.exit(1);
+  }
+
+  console.log(`\n${DIM}Reading the last ${OPTIONS.days} days of ${OPTIONS.mailbox}…${OFF}`);
   const lock = await client.getMailboxLock(OPTIONS.mailbox);
   try {
     const since = new Date(Date.now() - OPTIONS.days * 86_400_000);
