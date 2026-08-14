@@ -36,6 +36,12 @@ describe('extractDate', () => {
     expect(extractDate('יגיע ב־20/08/2026', NOW)).toBe('2026-08-20');
   });
 
+  it('reads the year from the reference date, not the current year', () => {
+    // Ingested email and SMS carry their own timestamp; an old message must not
+    // resolve to this year.
+    expect(extractDate('מועד משוער 18 באוגוסט', new Date(2024, 7, 12))).toBe('2024-08-18');
+  });
+
   it('resolves "מחר"', () => {
     expect(extractDate('החבילה תגיע מחר', NOW)).toBe('2026-08-14');
   });
