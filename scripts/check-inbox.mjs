@@ -2,22 +2,28 @@
  * Runs the Parcelly message parser over real shipping emails, so you can see
  * what it gets right before any of it is wired to a database.
  *
- *   node scripts/check-inbox.mjs              # read the inbox over IMAP
+ *   node scripts/check-inbox.mjs              # read the mailbox
  *   node scripts/check-inbox.mjs --days 60    # look further back
  *   node scripts/check-inbox.mjs --all        # every sender, not just shipping ones
  *   node scripts/check-inbox.mjs --show 3     # print the text handed to the parser
  *   node scripts/check-inbox.mjs --file a.eml # parse a saved .eml instead
+ *   node scripts/check-inbox.mjs --imap       # force IMAP even when Gmail is connected
+ *
+ * Reads Gmail over OAuth when `npm run login` has been run — a read-only,
+ * revocable token, no password on disk. Otherwise falls back to IMAP with an
+ * app password.
  *
  * Nothing is stored and nothing is uploaded: it reads, parses in memory, prints
- * a table, and exits. Credentials come from .env (see .env.example).
+ * a table, and exits.
  */
 import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createInterface } from 'node:readline/promises';
-import { stdin, stdout } from 'node:process';
+import { stdin } from 'node:process';
 import { build } from 'esbuild';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
+import { accessToken, getRawMessage, listMessageIds, loadStore } from './lib/google.mjs';
+import { createPrompter } from './lib/prompt.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -35,6 +41,7 @@ const OPTIONS = {
   show: Number(flag('show', 0)),
   file: flag('file', undefined),
   mailbox: flag('mailbox', 'INBOX'),
+  imap: argv.includes('--imap'),
 };
 
 /** Senders worth reading. --all skips this filter. */
@@ -67,25 +74,20 @@ function loadEnv() {
 async function promptForCredentials() {
   if (!stdin.isTTY) {
     console.error(
-      'No mailbox configured, and there is no terminal to ask on.\n' +
-        'Run `npm run inbox` directly in a terminal, or put IMAP_USER and ' +
-        'IMAP_PASSWORD in a .env file.',
+      'No mailbox connected, and there is no terminal to ask on.\n' +
+        'Run `npm run login` to connect Gmail with a revocable token, or run ' +
+        '`npm run inbox` in a terminal to sign in with an app password.',
     );
     process.exit(1);
   }
 
-  const rl = createInterface({ input: stdin, output: stdout, terminal: true });
-  const ask = async (question, { secret = false } = {}) => {
-    if (!secret) return (await rl.question(question)).trim();
-    // Echo the prompt, then silence the terminal so the password isn't shown.
-    stdout.write(question);
-    rl._writeToOutput = () => {};
-    const answer = await rl.question('');
-    // Restore the prototype method; assigning null would break later prompts.
-    delete rl._writeToOutput;
-    stdout.write('\n');
-    return answer.trim();
-  };
+  console.log(
+    `${DIM}Tip: \`npm run login\` connects Gmail with a read-only token instead, ` +
+      `so no password is stored on disk.${OFF}`,
+  );
+
+  const prompt = createPrompter();
+  const ask = prompt.ask;
 
   console.log(
     `\n${BOLD}Connect a mailbox${OFF}\n` +
@@ -122,7 +124,7 @@ async function promptForCredentials() {
     console.log('\nCancelled.');
     process.exit(1);
   } finally {
-    rl.close();
+    prompt.close();
   }
 }
 
@@ -236,9 +238,30 @@ const rows = [];
  */
 const parseAsOf = (mail) => parseMessage(messageText(mail), mail.date ?? new Date());
 
+/** Keeps a message if it looks like shipping mail, and records the parse. */
+function collect(mail) {
+  if (!OPTIONS.all && !isShipping(mail)) return;
+  rows.push({ mail, parsed: parseAsOf(mail), text: messageText(mail) });
+}
+
+const gmail = OPTIONS.imap ? undefined : loadStore();
+
 if (OPTIONS.file) {
   const mail = await simpleParser(readFileSync(OPTIONS.file));
   rows.push({ mail, parsed: parseAsOf(mail) });
+} else if (gmail) {
+  let token;
+  try {
+    token = await accessToken(gmail);
+  } catch (error) {
+    console.error(`\n${RED}Gmail access failed${OFF}\n${error.message}`);
+    process.exit(1);
+  }
+
+  console.log(`\n${DIM}Reading the last ${OPTIONS.days} days from Gmail…${OFF}`);
+  for await (const id of listMessageIds(token, OPTIONS.days)) {
+    collect(await simpleParser(await getRawMessage(token, id)));
+  }
 } else {
   const fromEnv = process.env.IMAP_USER && process.env.IMAP_PASSWORD;
   const { user, password, host } = fromEnv
@@ -279,9 +302,7 @@ if (OPTIONS.file) {
   try {
     const since = new Date(Date.now() - OPTIONS.days * 86_400_000);
     for await (const message of client.fetch({ since }, { source: true })) {
-      const mail = await simpleParser(message.source);
-      if (!OPTIONS.all && !isShipping(mail)) continue;
-      rows.push({ mail, parsed: parseAsOf(mail), text: messageText(mail) });
+      collect(await simpleParser(message.source));
     }
   } finally {
     lock.release();

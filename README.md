@@ -90,14 +90,42 @@ src/
 ```bash
 git clone https://github.com/SophieCoop/Parcelly.git
 cd Parcelly
-git checkout claude/parcelly-package-tracker-cvduxs
 npm install
-npm run inbox
 ```
 
-בהרצה הראשונה הסקריפט **ישאל אותך** על המסך לכתובת המייל ולסיסמת האפליקציה — אין צורך ליצור
-או לערוך שום קובץ. הסיסמה לא מוצגת בזמן ההקלדה, ובסוף הוא ישאל אם לשמור אותה כדי לא לשאול
-שוב (נשמרת ל‑`.env`, שמוחרג מ‑git ונגיש רק למשתמש שלך).
+### הדרך המומלצת: חיבור Gmail עם טוקן הפיך
+
+```bash
+npm run login     # מבקש הרשאת קריאה בלבד, דרך הדפדפן
+npm run inbox     # מכאן קורא מ‑Gmail עם הטוקן
+npm run logout    # מבטל את ההרשאה ומוחק את הטוקן המקומי
+```
+
+ההרשאה היחידה שמבוקשת היא `gmail.readonly` — קריאת הודעות בלבד. הטוקן לא יכול לשלוח מייל,
+למחוק, או לגעת בשום שירות אחר של גוגל, וניתן לבטל אותו בכל רגע עם `npm run logout` או ב‑
+[myaccount.google.com/permissions](https://myaccount.google.com/permissions). שום סיסמה לא
+נשמרת על הדיסק.
+
+**הכנה חד‑פעמית ב‑[console.cloud.google.com](https://console.cloud.google.com):**
+
+1. יצירת פרויקט (כל שם)
+2. `APIs & Services → Library` → להפעיל **Gmail API**
+3. `APIs & Services → OAuth consent screen` → **External** → להוסיף את עצמך תחת **Test users**
+4. `Credentials → Create credentials → OAuth client ID` → סוג **Desktop app**
+5. להעתיק את ה‑Client ID וה‑Client secret; `npm run login` יבקש אותם פעם אחת
+
+> באפליקציה במצב **Testing** גוגל מפקיעה את ההרשאה אחרי 7 ימים. כשזה קורה, `npm run login`
+> מחדש פותר. יציאה ממצב זה דורשת אימות של גוגל, וזה שיקול למוצר בייצור — לא לפיתוח.
+
+### חלופה: IMAP עם סיסמת אפליקציה
+
+אם אין חשק להקים פרויקט ב‑Google Cloud, `npm run inbox` יבקש כתובת מייל וסיסמת אפליקציה.
+הסיסמה לא מוצגת בזמן ההקלדה, ובסוף תישאלי אם לשמור אותה (ל‑`.env`, מוחרג מ‑git, הרשאות
+`0600`).
+
+שימי לב שזו סיסמה בטקסט גלוי על הדיסק, והיא מעניקה גישה מלאה לדואר — כולל שליחה. אם משתמשים
+בה, כדאי לבטל אותה בסיום הבדיקות ב‑
+[myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
 
 ```bash
 npm run inbox -- --days 90     # לחפש אחורה יותר
